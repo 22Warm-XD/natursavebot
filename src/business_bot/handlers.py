@@ -11,7 +11,6 @@ from src.business_bot.media_downloader import download_business_media, has_expir
 from src.business_bot.message_saver import save_business_delete, save_business_edit, save_business_message
 from src.business_bot.notifications import (
     notify_business_delete,
-    notify_business_delete_missing,
     notify_business_disabled,
     notify_business_edit,
     notify_business_enabled,
@@ -118,12 +117,16 @@ async def on_deleted_business_messages(deleted: BusinessMessagesDeleted, bot: Bo
     if event is None:
         return
     if values.get("save_mode_notify_deletes", settings.effective_notify_deletes):
+        if not messages:
+            logger.info(
+                "skip missing deleted business notification chat_id=%s message_ids=%s",
+                deleted.chat.id,
+                list(deleted.message_ids),
+            )
+            return
         chat_label = getattr(deleted.chat, "title", None) or getattr(deleted.chat, "username", None) or str(deleted.chat.id)
-        if messages:
-            for stored in messages:
-                await notify_business_delete(bot, settings, stored, chat_label=chat_label)
-        else:
-            await notify_business_delete_missing(bot, settings, chat_id=deleted.chat.id, message_ids=list(deleted.message_ids))
+        for stored in messages:
+            await notify_business_delete(bot, settings, stored, chat_label=chat_label)
 
 
 async def handle_raw_business_update(update: Update | dict) -> bool:

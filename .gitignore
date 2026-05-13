@@ -30,6 +30,7 @@ sessions/
 downloads/
 
 photo_*.jpg
+ChatGPT Image*.png
 *.log
 logs/
 

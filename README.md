@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/readme/hero.jpg" alt="Mnemora hero" width="720">
+<img src="assets/readme/hero.png" alt="Mnemora hero" width="720">
 
 # Mnemora — Telegram Business Save Mode & AI Assistant
 
@@ -25,7 +25,6 @@
 | AI Assistant | Поиск, summary, catchup, задачи, напоминания, дайджесты |
 | Локальная память | SQLite + FTS5, без внешнего векторного сервиса по умолчанию |
 | Legacy mode | Telethon userbot для dot-команд и расширенных действий |
-| Безопасность | `.env`, сессии, БД, медиа и логи не попадают в git |
 
 ## ✨ Основные Возможности
 
@@ -233,25 +232,6 @@ python -m src.main
 | `.repeat n текст` | Ограниченный повтор, рекомендуемое имя |
 | `.love` | Короткая анимация |
 
-## 🔐 Безопасность
-
-В git не должны попадать:
-
-- `.env`
-- `*.session`, `*.session-journal`
-- `data/app.db`, `*.db`, `*.sqlite`
-- `data/media/*`
-- логи
-- реальные токены, API-ключи и Fernet ключ
-
-Все исходящие сообщения от имени Business-аккаунта проходят через черновик и inline-кнопки:
-
-- `✅ Отправить`
-- `✏️ Изменить`
-- `❌ Отмена`
-
-Исключение — явно включённый автоответчик, он выключен по умолчанию и работает только по разрешённым правилам.
-
 ## ⚠️ Ограничения Telegram API
 
 - Mnemora не восстанавливает сообщения, отправленные до подключения бота.
@@ -307,25 +287,6 @@ python -m pytest
 ```bash
 docker compose config
 ```
-
-## 🧭 Roadmap
-
-- Webhook mode для production вместо polling.
-- Отдельный vector search модуль, подключаемый опционально.
-- Более гибкие правила включённых/исключённых чатов.
-- Экспорт архива SAVE MODE.
-- Больше unit-тестов вокруг live aiogram/Telethon handlers.
-
-## 🆘 Troubleshooting
-
-| Проблема | Что проверить |
-| --- | --- |
-| `/business_status` не видит подключение | Бот выбран в `Telegram Business -> Чат-боты`, права выданы, polling запущен |
-| Нет удалённых сообщений | Бот был подключён после сообщения или не имел доступа к чату |
-| Не скачалось медиа | Bot API не отдал файл, файл слишком большой или protected/expired |
-| `.mute` не работает | Включи `TELEGRAM_MODE=userbot` или `both`, подключи Telethon через `/login` |
-| `.spam` не отправляет много | Это ограниченный repeat текущего чата, лимит задаёт `MAX_REPEAT_COUNT` |
-| В command menu были `????` | Проверь, что файлы сохранены в UTF-8 и деплой использует актуальную версию проекта |
 
 ---
 
