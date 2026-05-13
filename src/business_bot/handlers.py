@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from aiogram import Bot, Router
 from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message, Update
@@ -60,16 +61,21 @@ async def on_business_message(message: Message, bot: Bot, settings: Settings) ->
         if not values.get("save_mode_enabled", True):
             return
         media = None
-        if values.get("save_media_enabled", True):
+        save_media_enabled = values.get("save_media_enabled", True)
+        if save_media_enabled:
             media = await download_business_media(bot, message, settings)
         row = await save_business_message(session, message, media, owner_id=settings.owner_telegram_id)
         if media and media.media_type and media.local_path and has_expiring_media_hint(message):
             saved_notice = (row, media, "🕒 Истекающее медиа сохранено")
-        elif has_expiring_media_hint(message) and not (getattr(message, "voice", None) or getattr(message, "audio", None)):
+        elif save_media_enabled and has_expiring_media_hint(message) and not (getattr(message, "voice", None) or getattr(message, "audio", None)):
             unavailable_notice = (row, media)
         reply_notice = await _save_replied_media_if_owner_reply(session, message, bot, settings, values)
         if reply_notice:
-            saved_notice = reply_notice
+            row_reply, media_reply, title_reply, downloaded = reply_notice
+            if downloaded:
+                saved_notice = (row_reply, media_reply, title_reply)
+            else:
+                unavailable_notice = (row_reply, media_reply)
         await session.commit()
     if saved_notice:
         row, notice_media, title = saved_notice
@@ -156,7 +162,15 @@ async def _notify_business_dot_unavailable(message: Message, bot: Bot, settings:
     if not text.startswith("."):
         return False
     command = text.split(maxsplit=1)[0].lower()
-    if command not in {".mute", ".unmute", ".type", ".spam", ".repeat", ".love", ".info"}:
+    if command not in {
+        ".mute", ".мут",
+        ".unmute", ".размут",
+        ".type", ".тайп",
+        ".spam", ".спам",
+        ".repeat", ".репит",
+        ".love", ".лав",
+        ".info", ".инфо",
+    }:
         return False
     await bot.send_message(
         settings.owner_telegram_id,
@@ -174,12 +188,21 @@ async def _save_replied_media_if_owner_reply(session, message: Message, bot: Bot
     reply = message.reply_to_message
     if reply is None:
         return None
-    if not has_expiring_media_hint(reply):
+    # InaccessibleMessage in Business API can miss media/text payload.
+    has_any_media = any(
+        getattr(reply, attr, None)
+        for attr in ("photo", "video", "animation", "voice", "audio", "document", "video_note", "sticker")
+    )
+    if not has_any_media:
+        return None
+    message_text = (message.text or message.caption or "").strip().lower()
+    by_trigger = bool(re.fullmatch(r"(?:/save|\.save|save|сохрани|\.сейв|/сейв)", message_text))
+    if not by_trigger and not has_expiring_media_hint(reply):
         return None
     media = await download_business_media(bot, reply, settings, allow_voice_audio=True)
     if not media.media_type:
         return None
     row = await save_business_message(session, reply, media, owner_id=settings.owner_telegram_id)
     if media.local_path:
-        return row, media, "🕒 Скрытое медиа из ответа сохранено"
-    return None
+        return row, media, "🕒 Скрытое медиа из ответа сохранено", True
+    return row, media, "⏳ Скрытое медиа из ответа обнаружено", False

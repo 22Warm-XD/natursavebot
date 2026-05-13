@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -114,21 +115,28 @@ async def download_business_media(
     if media.file_size and media.file_size > max_bytes:
         media.status = "too_large"
         return media
-    try:
-        tg_file = await bot.get_file(media.file_id)
-        ext = _extension(tg_file.file_path, media.media_type, media.mime_type)
-        target_dir = Path(settings.media_dir) / str(message.chat.id)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / f"{message.message_id}_{media.media_type}{ext}"
-        await bot.download_file(tg_file.file_path, destination=target)
-        media.local_path = str(target)
-        media.status = "downloaded"
-        media.metadata["bot_file_path"] = tg_file.file_path
-        media.metadata["local_path"] = str(target)
-    except Exception as exc:
-        logger.info("business media unavailable: %s", exc)
-        media.status = "error"
-        media.error = str(exc)
+    attempts = 3 if has_expiring_media_hint(message) else 1
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            tg_file = await bot.get_file(media.file_id)
+            ext = _extension(tg_file.file_path, media.media_type, media.mime_type)
+            target_dir = Path(settings.media_dir) / str(message.chat.id)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / f"{message.message_id}_{media.media_type}{ext}"
+            await bot.download_file(tg_file.file_path, destination=target)
+            media.local_path = str(target)
+            media.status = "downloaded"
+            media.metadata["bot_file_path"] = tg_file.file_path
+            media.metadata["local_path"] = str(target)
+            return media
+        except Exception as exc:
+            last_error = exc
+            logger.info("business media unavailable (attempt %s/%s): %s", attempt, attempts, exc)
+            if attempt < attempts:
+                await asyncio.sleep(0.45)
+    media.status = "error"
+    media.error = str(last_error) if last_error else "unknown"
     return media
 
 

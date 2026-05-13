@@ -15,6 +15,11 @@ TRASH_EMOJI = '<tg-emoji emoji-id="5879896690210639947">🗑</tg-emoji>'
 EDIT_EMOJI = '<tg-emoji emoji-id="5879841310902324730">✏️</tg-emoji>'
 TIME_EMOJI = '<tg-emoji emoji-id="5778605968208170641">🕒</tg-emoji>'
 PHOTO_EMOJI = '<tg-emoji emoji-id="5992441476364112370">🖼</tg-emoji>'
+EFFECT_FIREWORK = "5046509860389126442"
+EFFECT_THUMBS_UP = "5107584321108051014"
+EFFECT_POOP = "5046589136895476101"
+EFFECT_FIRE = "5104841245755180586"
+EFFECT_HEART = "5159385139981059251"
 
 MEDIA_TITLES = {
     "photo": "Фото было удалено",
@@ -56,12 +61,19 @@ async def notify_business_delete(bot: Bot, settings: Settings, message, *, chat_
     body = _delete_caption(message, title=f"{marker} {title}".strip(), chat_label=chat_label)
     media_path = getattr(message, "media_path", None)
     if media_path and Path(media_path).exists():
-        await _send_media_with_caption(bot, settings.owner_telegram_id, message.media_type, media_path, body)
+        await _send_media_with_caption(
+            bot,
+            settings.owner_telegram_id,
+            message.media_type,
+            media_path,
+            body,
+            message_effect_id=EFFECT_POOP,
+        )
         return
     if getattr(message, "media_type", None):
         status = html_quote(getattr(message, "media_status", None) or "unknown")
         body += f"\n\nМедиа недоступно через Bot API / protected / expired.\nStatus: <code>{status}</code>"
-    await _safe_message(bot, settings.owner_telegram_id, body)
+    await _safe_message(bot, settings.owner_telegram_id, body, message_effect_id=EFFECT_POOP)
 
 
 async def notify_business_media_saved(bot: Bot, settings: Settings, message, media, *, title: str | None = None) -> None:
@@ -69,9 +81,16 @@ async def notify_business_media_saved(bot: Bot, settings: Settings, message, med
     body = _media_caption(message, title=media_title, media=media)
     media_path = getattr(media, "local_path", None)
     if media_path and Path(media_path).exists():
-        await _send_media_with_caption(bot, settings.owner_telegram_id, getattr(media, "media_type", None), media_path, body)
+        await _send_media_with_caption(
+            bot,
+            settings.owner_telegram_id,
+            getattr(media, "media_type", None),
+            media_path,
+            body,
+            message_effect_id=EFFECT_HEART,
+        )
     else:
-        await _safe_message(bot, settings.owner_telegram_id, body)
+        await _safe_message(bot, settings.owner_telegram_id, body, message_effect_id=EFFECT_HEART)
 
 
 async def notify_business_media_unavailable(bot: Bot, settings: Settings, message, media=None) -> None:
@@ -82,7 +101,7 @@ async def notify_business_media_unavailable(bot: Bot, settings: Settings, messag
         media=media,
         extra=f"\n\nМедиа недоступно через Bot API / protected / expired.\nStatus: <code>{status}</code>",
     )
-    await _safe_message(bot, settings.owner_telegram_id, body)
+    await _safe_message(bot, settings.owner_telegram_id, body, message_effect_id=EFFECT_HEART)
 
 
 async def notify_business_delete_missing(bot: Bot, settings: Settings, *, chat_id: int, message_ids: list[int]) -> None:
@@ -119,6 +138,7 @@ async def notify_business_edit(
         "↓↓↓\n\n"
         f"<blockquote>{html_quote(clip(new_text or '', 900))}</blockquote>\n\n"
         "Сохранено Mnemora Save Mode",
+        message_effect_id=EFFECT_FIRE,
     )
 
 
@@ -143,26 +163,34 @@ def _media_caption(message, *, title: str, media=None, extra: str = "") -> str:
     )
 
 
-async def _send_media_with_caption(bot: Bot, owner_id: int, media_type: str | None, path: str, caption: str) -> None:
+async def _send_media_with_caption(
+    bot: Bot,
+    owner_id: int,
+    media_type: str | None,
+    path: str,
+    caption: str,
+    *,
+    message_effect_id: str | None = None,
+) -> None:
     media = FSInputFile(path)
     if media_type == "photo":
-        await bot.send_photo(owner_id, media, caption=caption)
+        await _send_with_effect_retry(bot.send_photo, owner_id, media, caption, message_effect_id)
     elif media_type == "video":
-        await bot.send_video(owner_id, media, caption=caption)
+        await _send_with_effect_retry(bot.send_video, owner_id, media, caption, message_effect_id)
     elif media_type == "animation":
-        await bot.send_animation(owner_id, media, caption=caption)
+        await _send_with_effect_retry(bot.send_animation, owner_id, media, caption, message_effect_id)
     elif media_type == "voice":
-        await bot.send_voice(owner_id, media, caption=caption)
+        await _send_with_effect_retry(bot.send_voice, owner_id, media, caption, message_effect_id)
     elif media_type == "audio":
-        await bot.send_audio(owner_id, media, caption=caption)
+        await _send_with_effect_retry(bot.send_audio, owner_id, media, caption, message_effect_id)
     elif media_type == "video_note":
         await bot.send_video_note(owner_id, media)
-        await _safe_message(bot, owner_id, caption)
+        await _safe_message(bot, owner_id, caption, message_effect_id=message_effect_id)
     elif media_type == "sticker":
         await bot.send_sticker(owner_id, media)
-        await _safe_message(bot, owner_id, caption)
+        await _safe_message(bot, owner_id, caption, message_effect_id=message_effect_id)
     else:
-        await bot.send_document(owner_id, media, caption=caption)
+        await _send_with_effect_retry(bot.send_document, owner_id, media, caption, message_effect_id)
 
 
 def _media_marker(media_type: str | None) -> str:
@@ -246,9 +274,27 @@ def _format_date(value) -> str:
     return dt.astimezone(EKB_TZ).strftime("%H:%M %d.%m.%y")
 
 
-async def _safe_message(bot: Bot, chat_id: int, text: str) -> None:
-    await bot.send_message(
-        chat_id,
-        text,
-        link_preview_options=LinkPreviewOptions(is_disabled=True),
-    )
+async def _send_with_effect_retry(sender, owner_id: int, media: FSInputFile, caption: str, message_effect_id: str | None) -> None:
+    kwargs = {"caption": caption}
+    if message_effect_id:
+        kwargs["message_effect_id"] = message_effect_id
+    try:
+        await sender(owner_id, media, **kwargs)
+    except TypeError:
+        kwargs.pop("message_effect_id", None)
+        await sender(owner_id, media, **kwargs)
+
+
+async def _safe_message(bot: Bot, chat_id: int, text: str, *, message_effect_id: str | None = None) -> None:
+    kwargs = {
+        "chat_id": chat_id,
+        "text": text,
+        "link_preview_options": LinkPreviewOptions(is_disabled=True),
+    }
+    if message_effect_id:
+        kwargs["message_effect_id"] = message_effect_id
+    try:
+        await bot.send_message(**kwargs)
+    except TypeError:
+        kwargs.pop("message_effect_id", None)
+        await bot.send_message(**kwargs)

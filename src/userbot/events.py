@@ -16,7 +16,7 @@ from src.config import Settings
 from src.db.repositories.chat_settings import get_chat_setting, hard_mute_active
 from src.db.repositories.chats import get_chat_by_id, upsert_chat
 from src.db.repositories.hard_mute import create_hard_mute_event, update_hard_mute_delete_status
-from src.db.repositories.messages import find_messages_by_ids, upsert_message
+from src.db.repositories.messages import upsert_message
 from src.db.repositories.settings import get_all_settings
 from src.db.session import get_session
 from src.services.auto_reply import AutoReplyGate, build_auto_reply
@@ -57,7 +57,7 @@ def attach_event_handlers(client: TelegramClient, bot: Bot, settings: Settings, 
                     settings.enable_hard_mute
                     and not msg.out
                     and hard_mute_active(chat_setting)
-                    and (is_private or settings.enable_group_hard_mute)
+                    and (is_private or (chat_type == "group" and settings.enable_group_hard_mute))
                 )
                 await upsert_chat(
                     session,
@@ -187,23 +187,14 @@ def attach_event_handlers(client: TelegramClient, bot: Bot, settings: Settings, 
                 chat_row = await get_chat_by_id(session, event.chat_id) if event.chat_id is not None else None
                 if event.chat_id is not None and not _save_mode_allowed(app_settings, chat_row, chat_row.chat_type == "private" if chat_row else False):
                     return
-                allowed_chat_ids = None
                 if event.chat_id is None:
-                    allowed_chat_ids = set()
-                    candidates = await find_messages_by_ids(session, list(event.deleted_ids), chat_id=None)
-                    for candidate in candidates:
-                        candidate_chat = await get_chat_by_id(session, candidate.chat_id)
-                        candidate_is_private = candidate_chat.chat_type == "private" if candidate_chat else False
-                        if _save_mode_allowed(app_settings, candidate_chat, candidate_is_private):
-                            allowed_chat_ids.add(candidate.chat_id)
-                    if not allowed_chat_ids:
-                        return
+                    logger.info("skip unresolved delete event without chat_id; deleted_ids=%s", list(event.deleted_ids))
+                    return
                 notes = await record_delete(
                     session,
                     message_ids=list(event.deleted_ids),
                     chat_id=event.chat_id,
                     deleted_at=datetime.now(UTC).replace(tzinfo=None),
-                    allowed_chat_ids=allowed_chat_ids,
                 )
                 await session.commit()
             if app_settings.get("save_mode_enabled", True) and app_settings.get("save_mode_notify_deletes", True):

@@ -35,7 +35,7 @@ def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settin
             sender_id = own_id_cache["id"]
         return int(sender_id) == int(owner_id)
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.mute$"))
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:mute|мут)$"))
     async def mute(event: events.NewMessage.Event) -> None:
         if not await is_owner(event):
             return
@@ -43,7 +43,10 @@ def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settin
             await event.edit("Hard mute выключен в настройках проекта.")
             return
         chat, chat_title, username, chat_type = await _chat_meta(event)
-        if chat_type != "private" and not settings.enable_group_hard_mute:
+        if chat_type == "channel":
+            await event.edit("Hard mute для каналов отключён.")
+            return
+        if chat_type == "group" and not settings.enable_group_hard_mute:
             await event.edit("Hard mute в группах выключен. Включи ENABLE_GROUP_HARD_MUTE=true, если это точно нужно.")
             return
         async with get_session() as session:
@@ -69,7 +72,7 @@ def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settin
             "и удаляться из переписки, если Telegram позволит."
         )
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.unmute$"))
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:unmute|размут)$"))
     async def unmute(event: events.NewMessage.Event) -> None:
         if not await is_owner(event):
             return
@@ -86,7 +89,7 @@ def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settin
             await session.commit()
         await event.edit("🔔 Hard mute выключен. Новые сообщения из этого чата больше не будут удаляться автоматически.")
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.info$"))
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:info|инфо)$"))
     async def info(event: events.NewMessage.Event) -> None:
         if not await is_owner(event):
             return
@@ -125,7 +128,7 @@ def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settin
             logger.exception(".info failed")
             await event.edit("Не удалось получить информацию о пользователе.")
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.type(?:\s+(.+))?$"))
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:type|тайп)(?:\s+(.+))?$"))
     async def type_text(event: events.NewMessage.Event) -> None:
         if not await is_owner(event):
             return
@@ -144,16 +147,20 @@ def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settin
         except Exception:
             logger.exception(".type failed")
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(spam|repeat)(?:\s+(.+))?$"))
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(spam|repeat|спам|репит)(?:\s+(.+))?$"))
     async def repeat(event: events.NewMessage.Event) -> None:
         if not await is_owner(event):
             return
-        command = "." + event.pattern_match.group(1).lower()
+        raw_command = event.pattern_match.group(1).lower()
+        command = ".spam" if raw_command in {"spam", "спам"} else ".repeat"
         if command == ".spam" and not settings.enable_spam_alias:
             await event.edit("Используй .repeat. Alias .spam выключен в настройках.")
             return
         _, _, _, chat_type = await _chat_meta(event)
-        if chat_type != "private" and not settings.enable_group_repeat:
+        if chat_type == "channel":
+            await event.edit("Повтор в каналах отключён.")
+            return
+        if chat_type == "group" and not settings.enable_group_repeat:
             await event.edit("Повтор в группах выключен. Включи ENABLE_GROUP_REPEAT=true, если это точно нужно.")
             return
         left = _cooldown.check(owner_id, "repeat", time.monotonic(), settings.dot_command_cooldown_seconds)
@@ -179,7 +186,7 @@ def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settin
                 await asyncio.sleep(exc.seconds)
             await asyncio.sleep(max(float(settings.repeat_delay_seconds), 0.1))
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.love$"))
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:love|лав)$"))
     async def love(event: events.NewMessage.Event) -> None:
         if not await is_owner(event):
             return
