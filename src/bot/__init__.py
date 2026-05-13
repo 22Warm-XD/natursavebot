@@ -1,0 +1,1 @@
+"""Aiogram control bot."""

@@ -1,0 +1,10 @@
+services:
+  mnemora:
+    build: .
+    container_name: mnemora
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command: python -m src.main
