@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aiogram.types import Message
@@ -98,6 +100,8 @@ async def test_spam_repeat_sends_n_messages_to_same_chat(tmp_path) -> None:
         telegram_mode="business",
         max_repeat_count=5,
         repeat_delay_seconds=0.0,
+        repeat_delay_min_seconds=0.0,
+        repeat_delay_max_seconds=0.0,
         dot_command_cooldown_seconds=1,
     )
     bot = _Bot()
@@ -106,6 +110,7 @@ async def test_spam_repeat_sends_n_messages_to_same_chat(tmp_path) -> None:
     async with get_session() as session:
         handled = await _run(session, message, settings, bot)
         await session.commit()
+    await asyncio.sleep(0.4)
 
     assert handled is True
     sent_hi = [call for call in bot.sent_messages if call.get("text") == "hi" and call["chat_id"] == 500]
@@ -174,6 +179,7 @@ async def test_business_message_love_processed_by_business_router(tmp_path) -> N
         owner_telegram_id=100,
         telegram_mode="business",
         save_mode_enabled=False,
+        dot_command_cooldown_seconds=0,
         love_animation_max_messages=1,
     )
     bot = _Bot()

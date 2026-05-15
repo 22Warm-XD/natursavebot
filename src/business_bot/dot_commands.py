@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from types import SimpleNamespace
 
@@ -12,19 +13,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.business_bot.sender import delete_business_messages, send_business_chat_action, send_business_message
 from src.config import Settings
 from src.db.repositories.chat_settings import set_hard_mute
-from src.services.hard_mute import DotCommandCooldown, clamp_repeat_count, dot_usage, parse_repeat_args
+from src.services.hard_mute import DotCommandCooldown, clamp_repeat_count, parse_repeat_args
 from src.services.user_info import format_user_info
 
 
 logger = logging.getLogger(__name__)
 _cooldown = DotCommandCooldown()
-_LOVE_FRAMES = ["❤️", "❤️❤️", "❤️❤️❤️", "❤️❤️", "❤️"]
+_LOVE_FRAMES = ["✨❤️", "❤️‍🔥❤️", "💫❤️‍🔥💫", "❤️❤️❤️", "✨❤️✨"]
+_repeat_tasks: dict[int, asyncio.Task] = {}
+
 _DOT_ALIASES = {
     ".мут": ".mute",
     ".размут": ".unmute",
     ".тайп": ".type",
     ".спам": ".spam",
     ".репит": ".repeat",
+    ".стопспам": ".spam_stop",
+    ".stopspam": ".spam_stop",
     ".лав": ".love",
     ".инфо": ".info",
 }
@@ -41,12 +46,14 @@ async def handle_business_dot_command(
         return False
     if not message.from_user or message.from_user.id != settings.owner_telegram_id:
         return False
-    text = (message.text or message.caption or "").strip()
-    if not text.startswith("."):
+    full_text = (message.text or message.caption or "").strip()
+    if not full_text.startswith("."):
         return False
-    command_raw, _, rest = text.partition(" ")
+
+    command_raw, _, _ = full_text.partition(" ")
+    body = full_text[len(command_raw) :].strip()
     command = _DOT_ALIASES.get(command_raw.lower(), command_raw.lower())
-    if command not in {".mute", ".unmute", ".type", ".spam", ".repeat", ".love", ".info"}:
+    if command not in {".mute", ".unmute", ".type", ".spam", ".repeat", ".spam_stop", ".love", ".info"}:
         return False
 
     connection_id = message.business_connection_id
@@ -57,13 +64,6 @@ async def handle_business_dot_command(
 
     chat_type = str(getattr(message.chat, "type", ""))
     if _is_group_chat(chat_type) and not settings.enable_group_dot_commands:
-        await send_business_message(
-            bot,
-            business_connection_id=connection_id,
-            chat_id=message.chat.id,
-            text=f"{command}: отключено для групп. Включи ENABLE_GROUP_DOT_COMMANDS=true, если нужно.",
-            reply_to_message_id=message.message_id,
-        )
         return True
 
     if command == ".mute":
@@ -71,9 +71,11 @@ async def handle_business_dot_command(
     elif command == ".unmute":
         await _cmd_unmute(session, message, bot, settings, connection_id)
     elif command == ".type":
-        await _cmd_type(message, bot, settings, connection_id, rest.strip())
+        await _cmd_type(message, bot, settings, connection_id, body)
     elif command in {".spam", ".repeat"}:
-        await _cmd_repeat(message, bot, settings, connection_id, command, rest.strip(), chat_type)
+        await _cmd_repeat(message, bot, settings, connection_id, command, body, chat_type)
+    elif command == ".spam_stop":
+        await _cmd_repeat_stop(message.chat.id)
     elif command == ".love":
         await _cmd_love(message, bot, settings, connection_id)
     elif command == ".info":
@@ -137,13 +139,6 @@ async def _cmd_type(
     text: str,
 ) -> None:
     if not text:
-        await send_business_message(
-            bot,
-            business_connection_id=connection_id,
-            chat_id=message.chat.id,
-            text=dot_usage(".type"),
-            reply_to_message_id=message.message_id,
-        )
         return
     text = text[: settings.type_max_text_length]
     try:
@@ -156,12 +151,15 @@ async def _cmd_type(
     except Exception:
         logger.debug("business typing action failed", exc_info=True)
     await asyncio.sleep(min(3.0, max(0.35, len(text) / 45)))
-    await send_business_message(
-        bot,
-        business_connection_id=connection_id,
-        chat_id=message.chat.id,
-        text=text,
-    )
+    try:
+        await send_business_message(
+            bot,
+            business_connection_id=connection_id,
+            chat_id=message.chat.id,
+            text=text,
+        )
+    except Exception:
+        logger.exception("business .type send failed chat_id=%s", message.chat.id)
 
 
 async def _cmd_repeat(
@@ -174,22 +172,8 @@ async def _cmd_repeat(
     chat_type: str,
 ) -> None:
     if command == ".spam" and not settings.enable_spam_alias:
-        await send_business_message(
-            bot,
-            business_connection_id=connection_id,
-            chat_id=message.chat.id,
-            text="Используй .repeat. Alias .spam выключен.",
-            reply_to_message_id=message.message_id,
-        )
         return
     if _is_group_chat(chat_type) and not settings.enable_group_repeat:
-        await send_business_message(
-            bot,
-            business_connection_id=connection_id,
-            chat_id=message.chat.id,
-            text="Повтор в группах выключен. Включи ENABLE_GROUP_REPEAT=true, если нужно.",
-            reply_to_message_id=message.message_id,
-        )
         return
     left = _cooldown.check(
         settings.owner_telegram_id,
@@ -198,41 +182,26 @@ async def _cmd_repeat(
         settings.dot_command_cooldown_seconds,
     )
     if left > 0:
-        await send_business_message(
-            bot,
-            business_connection_id=connection_id,
-            chat_id=message.chat.id,
-            text=f"Cooldown: подожди ещё {int(left) + 1} сек.",
-            reply_to_message_id=message.message_id,
-        )
         return
     count_raw, text = parse_repeat_args(raw_args)
     if count_raw is None or text is None:
-        await send_business_message(
-            bot,
-            business_connection_id=connection_id,
-            chat_id=message.chat.id,
-            text=dot_usage(command),
-            reply_to_message_id=message.message_id,
-        )
         return
     count, clamped = clamp_repeat_count(count_raw, settings)
-    text = text[: settings.type_max_text_length]
     if clamped:
-        await send_business_message(
-            bot,
-            business_connection_id=connection_id,
-            chat_id=message.chat.id,
-            text=f"Лимит повтора: {count}. Отправляю только разрешённое количество.",
-        )
-    for _ in range(count):
-        await send_business_message(
-            bot,
+        logger.info("repeat count clamped chat_id=%s requested=%s actual=%s", message.chat.id, count_raw, count)
+    text = text[: settings.type_max_text_length]
+    await _cmd_repeat_stop(message.chat.id)
+    _repeat_tasks[message.chat.id] = asyncio.create_task(
+        _repeat_worker(
+            bot=bot,
             business_connection_id=connection_id,
             chat_id=message.chat.id,
             text=text,
+            count=count,
+            min_delay=max(0.1, float(settings.repeat_delay_min_seconds)),
+            max_delay=max(float(settings.repeat_delay_min_seconds), float(settings.repeat_delay_max_seconds)),
         )
-        await asyncio.sleep(max(float(settings.repeat_delay_seconds), 0.1))
+    )
 
 
 async def _cmd_love(message: Message, bot: Bot, settings: Settings, connection_id: str) -> None:
@@ -243,13 +212,6 @@ async def _cmd_love(message: Message, bot: Bot, settings: Settings, connection_i
         settings.dot_command_cooldown_seconds,
     )
     if left > 0:
-        await send_business_message(
-            bot,
-            business_connection_id=connection_id,
-            chat_id=message.chat.id,
-            text=f"Cooldown: подожди ещё {int(left) + 1} сек.",
-            reply_to_message_id=message.message_id,
-        )
         return
     frames = _LOVE_FRAMES[: max(1, min(int(settings.love_animation_max_messages), 5))]
     for frame in frames:
@@ -276,13 +238,6 @@ async def _cmd_info(message: Message, bot: Bot, connection_id: str) -> None:
         user = _user_from_private_chat(message)
 
     if user is None:
-        await send_business_message(
-            bot,
-            business_connection_id=connection_id,
-            chat_id=message.chat.id,
-            text="Ответь командой .info на сообщение пользователя.",
-            reply_to_message_id=message.message_id,
-        )
         return
 
     text = format_user_info(
@@ -311,6 +266,47 @@ async def _try_delete_command_message(bot: Bot, connection_id: str, message_id: 
         )
     except Exception:
         logger.debug("failed to delete dot command message id=%s", message_id, exc_info=True)
+
+
+async def _repeat_worker(
+    *,
+    bot: Bot,
+    business_connection_id: str,
+    chat_id: int,
+    text: str,
+    count: int,
+    min_delay: float,
+    max_delay: float,
+) -> None:
+    try:
+        for _ in range(count):
+            await send_business_message(
+                bot,
+                business_connection_id=business_connection_id,
+                chat_id=chat_id,
+                text=text,
+            )
+            await asyncio.sleep(random.uniform(min_delay, max_delay))
+    except asyncio.CancelledError:
+        logger.info("repeat task cancelled chat_id=%s", chat_id)
+        raise
+    except Exception:
+        logger.exception("repeat worker failed chat_id=%s", chat_id)
+    finally:
+        current = _repeat_tasks.get(chat_id)
+        if current and current.done():
+            _repeat_tasks.pop(chat_id, None)
+
+
+async def _cmd_repeat_stop(chat_id: int) -> None:
+    task = _repeat_tasks.pop(chat_id, None)
+    if not task:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 def _is_group_chat(chat_type: str) -> bool:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 
 from telethon import TelegramClient, events
@@ -12,13 +13,14 @@ from src.config import Settings
 from src.db.repositories.chat_settings import set_hard_mute
 from src.db.repositories.chats import upsert_chat
 from src.db.session import get_session
-from src.services.hard_mute import DotCommandCooldown, clamp_repeat_count, dot_usage, parse_repeat_args
+from src.services.hard_mute import DotCommandCooldown, clamp_repeat_count, parse_repeat_args
 from src.services.user_info import format_user_info
 
 
 logger = logging.getLogger(__name__)
 _cooldown = DotCommandCooldown()
-_LOVE_FRAMES = ["❤️", "❤️❤️", "❤️❤️❤️", "❤️❤️", "❤️"]
+_LOVE_FRAMES = ["✨❤️", "❤️‍🔥❤️", "💫❤️‍🔥💫", "❤️❤️❤️", "✨❤️✨"]
+_repeat_tasks: dict[int, asyncio.Task] = {}
 
 
 def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settings) -> None:
@@ -128,63 +130,83 @@ def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settin
             logger.exception(".info failed")
             await event.edit("Не удалось получить информацию о пользователе.")
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:type|тайп)(?:\s+(.+))?$"))
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:type|тайп)(?:\s+([\s\S]+))?$"))
     async def type_text(event: events.NewMessage.Event) -> None:
         if not await is_owner(event):
             return
         text = (event.pattern_match.group(1) or "").strip()
         if not text:
-            await event.edit(dot_usage(".type"))
+            try:
+                await event.delete()
+            except Exception:
+                logger.debug("failed to delete empty .type command", exc_info=True)
             return
         text = text[: settings.type_max_text_length]
         try:
             async with client.action(event.chat_id, "typing"):
                 await asyncio.sleep(min(3.0, max(0.35, len(text) / 45)))
+        except Exception:
+            logger.debug(".type action failed", exc_info=True)
+        try:
             await event.delete()
+        except Exception:
+            logger.debug("failed to delete .type command", exc_info=True)
+        try:
             await client.send_message(event.chat_id, text)
         except FloodWaitError as exc:
             await asyncio.sleep(exc.seconds)
+            await client.send_message(event.chat_id, text)
         except Exception:
             logger.exception(".type failed")
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(spam|repeat|спам|репит)(?:\s+(.+))?$"))
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(spam|repeat|спам|репит)(?:\s+([\s\S]+))?$"))
     async def repeat(event: events.NewMessage.Event) -> None:
         if not await is_owner(event):
             return
-        raw_command = event.pattern_match.group(1).lower()
+        raw_command = (event.pattern_match.group(1) or "").lower()
         command = ".spam" if raw_command in {"spam", "спам"} else ".repeat"
         if command == ".spam" and not settings.enable_spam_alias:
-            await event.edit("Используй .repeat. Alias .spam выключен в настройках.")
             return
         _, _, _, chat_type = await _chat_meta(event)
         if chat_type == "channel":
-            await event.edit("Повтор в каналах отключён.")
             return
         if chat_type == "group" and not settings.enable_group_repeat:
-            await event.edit("Повтор в группах выключен. Включи ENABLE_GROUP_REPEAT=true, если это точно нужно.")
             return
         left = _cooldown.check(owner_id, "repeat", time.monotonic(), settings.dot_command_cooldown_seconds)
         if left > 0:
-            await event.edit(f"Cooldown: подожди ещё {int(left) + 1} сек.")
             return
         count_raw, text = parse_repeat_args(event.pattern_match.group(2))
         if count_raw is None or text is None:
-            await event.edit(dot_usage(command))
             return
         count, clamped = clamp_repeat_count(count_raw, settings)
+        if clamped:
+            logger.info("repeat count clamped chat_id=%s requested=%s actual=%s", event.chat_id, count_raw, count)
         text = text[: settings.type_max_text_length]
         try:
             await event.delete()
         except Exception:
             logger.debug("failed to delete repeat command", exc_info=True)
-        if clamped:
-            await client.send_message(event.chat_id, f"Лимит повтора: {count}. Отправляю только разрешённое количество.")
-        for _ in range(count):
-            try:
-                await client.send_message(event.chat_id, text)
-            except FloodWaitError as exc:
-                await asyncio.sleep(exc.seconds)
-            await asyncio.sleep(max(float(settings.repeat_delay_seconds), 0.1))
+        await _stop_repeat(event.chat_id)
+        _repeat_tasks[event.chat_id] = asyncio.create_task(
+            _repeat_worker(
+                client=client,
+                chat_id=event.chat_id,
+                text=text,
+                count=count,
+                min_delay=max(0.1, float(settings.repeat_delay_min_seconds)),
+                max_delay=max(float(settings.repeat_delay_min_seconds), float(settings.repeat_delay_max_seconds)),
+            )
+        )
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:spam_stop|стопспам)$"))
+    async def repeat_stop(event: events.NewMessage.Event) -> None:
+        if not await is_owner(event):
+            return
+        await _stop_repeat(event.chat_id)
+        try:
+            await event.delete()
+        except Exception:
+            logger.debug("failed to delete .spam_stop command", exc_info=True)
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.(?:love|лав)$"))
     async def love(event: events.NewMessage.Event) -> None:
@@ -192,7 +214,6 @@ def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settin
             return
         left = _cooldown.check(owner_id, "love", time.monotonic(), settings.dot_command_cooldown_seconds)
         if left > 0:
-            await event.edit(f"Cooldown: подожди ещё {int(left) + 1} сек.")
             return
         frames = _LOVE_FRAMES[: max(1, min(int(settings.love_animation_max_messages), 5))]
         try:
@@ -202,6 +223,45 @@ def attach_user_commands(client: TelegramClient, owner_id: int, settings: Settin
         for frame in frames:
             await client.send_message(event.chat_id, frame)
             await asyncio.sleep(0.7)
+
+
+async def _repeat_worker(
+    *,
+    client: TelegramClient,
+    chat_id: int,
+    text: str,
+    count: int,
+    min_delay: float,
+    max_delay: float,
+) -> None:
+    try:
+        for _ in range(count):
+            try:
+                await client.send_message(chat_id, text)
+            except FloodWaitError as exc:
+                await asyncio.sleep(exc.seconds)
+                await client.send_message(chat_id, text)
+            await asyncio.sleep(random.uniform(min_delay, max_delay))
+    except asyncio.CancelledError:
+        logger.info("telethon repeat cancelled chat_id=%s", chat_id)
+        raise
+    except Exception:
+        logger.exception("telethon repeat failed chat_id=%s", chat_id)
+    finally:
+        current = _repeat_tasks.get(chat_id)
+        if current and current.done():
+            _repeat_tasks.pop(chat_id, None)
+
+
+async def _stop_repeat(chat_id: int) -> None:
+    task = _repeat_tasks.pop(chat_id, None)
+    if not task:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def _chat_meta(event: events.NewMessage.Event):

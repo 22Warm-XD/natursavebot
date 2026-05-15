@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     enable_spam_alias: bool = True
     max_repeat_count: int = 5
     repeat_delay_seconds: float = 1.0
+    repeat_delay_min_seconds: float = 0.6
+    repeat_delay_max_seconds: float = 1.4
     enable_group_repeat: bool = False
     dot_command_cooldown_seconds: int = 30
     type_max_text_length: int = 4096
