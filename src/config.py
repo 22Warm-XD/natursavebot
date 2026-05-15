@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     digest_time: str = "09:00"
 
     enable_dot_commands: bool = True
+    enable_group_dot_commands: bool = False
     enable_hard_mute: bool = True
     hard_mute_delete_for_everyone: bool = True
     enable_group_hard_mute: bool = False

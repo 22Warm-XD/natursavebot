@@ -47,7 +47,8 @@ Telegram Business Save Mode & AI Assistant.
 
 <b>Dot-команды</b>
 .mute, .unmute, .info, .type, .repeat, .love
-Работают в userbot/Telethon mode. В business mode бот подскажет, что команда доступна только через Telethon.
+Работают в Telegram Business mode в том же чате через business_connection_id.
+Control-бот в ЛС нужен для настроек, логов и уведомлений SAVE MODE.
 
 Отправка от имени Business-аккаунта всегда идёт через черновик и inline-подтверждение."""
 

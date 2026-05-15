@@ -8,6 +8,7 @@ from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message, 
 from sqlalchemy import select
 
 from src.business_bot.connection import save_business_connection
+from src.business_bot.dot_commands import handle_business_dot_command
 from src.business_bot.media_downloader import download_business_media, has_expiring_media_hint
 from src.business_bot.message_saver import save_business_delete, save_business_edit, save_business_message
 from src.business_bot.notifications import (
@@ -18,8 +19,11 @@ from src.business_bot.notifications import (
     notify_business_media_saved,
     notify_business_media_unavailable,
 )
+from src.business_bot.sender import delete_business_messages
 from src.config import Settings
 from src.db.models import BusinessConnection as StoredBusinessConnection
+from src.db.repositories.chat_settings import get_chat_setting, hard_mute_active
+from src.db.repositories.hard_mute import create_hard_mute_event, update_hard_mute_delete_status
 from src.db.repositories.settings import get_all_settings
 from src.db.session import get_session
 from src.services.save_mode_business import record_business_update
@@ -55,34 +59,59 @@ async def on_business_message(message: Message, bot: Bot, settings: Settings) ->
     async with get_session() as session:
         if not await _connection_allowed(session, message.business_connection_id, settings):
             return
-        if await _notify_business_dot_unavailable(message, bot, settings):
-            return
+
         values = await get_all_settings(session)
-        if not values.get("save_mode_enabled", True):
-            return
-        media = None
+        save_mode_enabled = values.get("save_mode_enabled", True)
         save_media_enabled = values.get("save_media_enabled", True)
-        if save_media_enabled:
-            media = await download_business_media(bot, message, settings)
-        row = await save_business_message(session, message, media, owner_id=settings.owner_telegram_id)
-        if media and media.media_type and media.local_path and has_expiring_media_hint(message):
-            saved_notice = (row, media, "🕒 Истекающее медиа сохранено")
-        elif save_media_enabled and has_expiring_media_hint(message) and not (getattr(message, "voice", None) or getattr(message, "audio", None)):
-            unavailable_notice = (row, media)
-        reply_notice = await _save_replied_media_if_owner_reply(session, message, bot, settings, values)
-        if reply_notice:
-            row_reply, media_reply, title_reply, downloaded = reply_notice
-            if downloaded:
-                saved_notice = (row_reply, media_reply, title_reply)
-            else:
-                unavailable_notice = (row_reply, media_reply)
+
+        media = None
+        row = None
+        if save_mode_enabled:
+            if save_media_enabled:
+                media = await download_business_media(bot, message, settings)
+            row = await save_business_message(session, message, media, owner_id=settings.owner_telegram_id)
+
+            if media and media.media_type and media.local_path and has_expiring_media_hint(message):
+                saved_notice = (row, media, "🕒 Истекающее медиа сохранено")
+            elif save_media_enabled and has_expiring_media_hint(message) and not (
+                getattr(message, "voice", None) or getattr(message, "audio", None)
+            ):
+                unavailable_notice = (row, media)
+
+            reply_notice = await _save_replied_media_if_owner_reply(session, message, bot, settings, values)
+            if reply_notice:
+                row_reply, media_reply, title_reply, downloaded = reply_notice
+                if downloaded:
+                    saved_notice = (row_reply, media_reply, title_reply)
+                else:
+                    unavailable_notice = (row_reply, media_reply)
+
+        dot_handled = await handle_business_dot_command(
+            session,
+            message=message,
+            bot=bot,
+            settings=settings,
+        )
+        if dot_handled:
+            await session.commit()
+            return
+
+        if not save_mode_enabled:
+            await session.commit()
+            return
+
+        if row and await _handle_hard_mute_if_needed(session, message, row, media, bot, settings):
+            await session.commit()
+            return
+
         await session.commit()
+
     if saved_notice:
-        row, notice_media, title = saved_notice
-        await notify_business_media_saved(bot, settings, row, notice_media, title=title)
+        row_saved, media_saved, title_saved = saved_notice
+        await notify_business_media_saved(bot, settings, row_saved, media_saved, title=title_saved)
     elif unavailable_notice:
-        row, notice_media = unavailable_notice
-        await notify_business_media_unavailable(bot, settings, row, notice_media)
+        row_missing, media_missing = unavailable_notice
+        await notify_business_media_unavailable(bot, settings, row_missing, media_missing)
 
 
 @router.edited_business_message()
@@ -94,7 +123,7 @@ async def on_edited_business_message(message: Message, bot: Bot, settings: Setti
         if not values.get("save_mode_enabled", True):
             return
         media = await download_business_media(bot, message, settings) if values.get("save_media_enabled", True) else None
-        row, edit, old_text = await save_business_edit(session, message, media, owner_id=settings.owner_telegram_id)
+        row, _, old_text = await save_business_edit(session, message, media, owner_id=settings.owner_telegram_id)
         await session.commit()
     if values.get("save_mode_notify_edits", settings.effective_notify_edits):
         await notify_business_edit(
@@ -153,31 +182,81 @@ async def _connection_allowed(session, connection_id: str | None, settings: Sett
     return bool(connection and connection.user_id == settings.owner_telegram_id and connection.is_enabled)
 
 
-async def _notify_business_dot_unavailable(message: Message, bot: Bot, settings: Settings) -> bool:
-    if settings.telegram_mode != "business":
+async def _handle_hard_mute_if_needed(session, message: Message, row, media, bot: Bot, settings: Settings) -> bool:
+    sender = message.from_user
+    if sender and sender.id == settings.owner_telegram_id:
         return False
-    if not message.from_user or message.from_user.id != settings.owner_telegram_id:
+    if not settings.enable_hard_mute:
         return False
-    text = (message.text or message.caption or "").strip()
-    if not text.startswith("."):
+    chat_type = str(getattr(message.chat, "type", ""))
+    if chat_type == "channel":
         return False
-    command = text.split(maxsplit=1)[0].lower()
-    if command not in {
-        ".mute", ".мут",
-        ".unmute", ".размут",
-        ".type", ".тайп",
-        ".spam", ".спам",
-        ".repeat", ".репит",
-        ".love", ".лав",
-        ".info", ".инфо",
-    }:
+    if chat_type in {"group", "supergroup"} and not settings.enable_group_hard_mute:
         return False
-    await bot.send_message(
-        settings.owner_telegram_id,
-        f"<b>{command}</b>: доступно только в userbot/Telethon mode.\n\n"
-        "Переключи <code>TELEGRAM_MODE=userbot</code> или <code>TELEGRAM_MODE=both</code> и подключи Telethon через /login.",
+
+    chat_setting = await get_chat_setting(session, message.chat.id)
+    if not hard_mute_active(chat_setting):
+        return False
+
+    event = await create_hard_mute_event(
+        session,
+        chat_id=message.chat.id,
+        message_id=message.message_id,
+        sender_id=getattr(row, "sender_id", None),
+        sender_name=getattr(row, "sender_name", None),
+        sender_username=getattr(row, "sender_username", None),
+        text=getattr(row, "text", None) or getattr(row, "caption", None),
+        media_file_id=getattr(media, "file_id", None),
+        media_local_path=getattr(media, "local_path", None),
+        raw_json=message.model_dump_json(exclude_none=True),
+    )
+
+    await _notify_hard_mute_hidden(bot, settings, row)
+
+    delete_for_everyone_success = False
+    delete_local_success = False
+    delete_error = None
+    try:
+        if message.business_connection_id:
+            await delete_business_messages(
+                bot,
+                business_connection_id=message.business_connection_id,
+                message_ids=[message.message_id],
+            )
+            delete_for_everyone_success = True
+            delete_local_success = True
+        else:
+            delete_error = "missing business_connection_id"
+    except Exception as exc:
+        delete_error = str(exc).replace("\n", " ")[:240]
+        logger.warning("hard mute delete failed chat=%s msg=%s err=%s", message.chat.id, message.message_id, delete_error)
+        await bot.send_message(
+            settings.owner_telegram_id,
+            f"Удаление для всех не удалось: {delete_error}",
+        )
+
+    await update_hard_mute_delete_status(
+        session,
+        event,
+        delete_for_everyone_success=delete_for_everyone_success,
+        delete_local_success=delete_local_success,
+        delete_error=delete_error,
     )
     return True
+
+
+async def _notify_hard_mute_hidden(bot: Bot, settings: Settings, row) -> None:
+    chat_label = getattr(row, "chat_title", None) or str(getattr(row, "chat_id", "-"))
+    author = getattr(row, "sender_name", None) or getattr(row, "sender_username", None) or str(getattr(row, "sender_id", "-"))
+    text = getattr(row, "text", None) or getattr(row, "caption", None) or "[медиа без текста]"
+    await bot.send_message(
+        settings.owner_telegram_id,
+        "🔇 Hard mute: сообщение скрыто\n\n"
+        f"Чат: {chat_label}\n"
+        f"Автор: {author}\n"
+        f"Время: {getattr(row, 'date', '-')}\n\n"
+        f"{text[:900]}",
+    )
 
 
 async def _save_replied_media_if_owner_reply(session, message: Message, bot: Bot, settings: Settings, values: dict):
@@ -188,17 +267,19 @@ async def _save_replied_media_if_owner_reply(session, message: Message, bot: Bot
     reply = message.reply_to_message
     if reply is None:
         return None
-    # InaccessibleMessage in Business API can miss media/text payload.
+
     has_any_media = any(
         getattr(reply, attr, None)
         for attr in ("photo", "video", "animation", "voice", "audio", "document", "video_note", "sticker")
     )
     if not has_any_media:
         return None
+
     message_text = (message.text or message.caption or "").strip().lower()
     by_trigger = bool(re.fullmatch(r"(?:/save|\.save|save|сохрани|\.сейв|/сейв)", message_text))
     if not by_trigger and not has_expiring_media_hint(reply):
         return None
+
     media = await download_business_media(bot, reply, settings, allow_voice_audio=True)
     if not media.media_type:
         return None

@@ -24,7 +24,7 @@
 | SAVE MODE | Сохраняет удалённые сообщения, правки и доступные медиа |
 | AI Assistant | Поиск, summary, catchup, задачи, напоминания, дайджесты |
 | Локальная память | SQLite + FTS5, без внешнего векторного сервиса по умолчанию |
-| Legacy mode | Telethon userbot для dot-команд и расширенных действий |
+| Legacy mode | Telethon userbot остаётся как optional backend для отдельных legacy-сценариев |
 
 ## ✨ Основные Возможности
 
@@ -39,7 +39,7 @@
 | Поиск | `/search текст` ищет по локальной базе через SQLite FTS5 |
 | AI | Поддерживает Anthropic Claude, OpenAI и Gemini через единый LLM router |
 | Черновики ответов | Любая отправка от имени Business-аккаунта идёт через inline-подтверждение |
-| Dot commands | `.mute`, `.info`, `.repeat`, `.type`, `.love` работают в Telethon mode |
+| Dot commands | `.mute`, `.info`, `.repeat`, `.type`, `.love` работают в Business mode в том же чате |
 
 ## 🧩 Telegram Business Mode
 
@@ -100,7 +100,8 @@ LLM router поддерживает:
 
 ## ⚡ Dot Commands
 
-Dot-команды нужны для возможностей, которые недоступны или сильно ограничены в Telegram Business Bot API. Они работают в `TELEGRAM_MODE=userbot` или `TELEGRAM_MODE=both` через Telethon.
+Dot-команды в основном режиме `TELEGRAM_MODE=business` выполняются через Telegram Business Bot API и `business_connection_id` прямо в том же чате, где ты их вызвал.  
+Control-бот в ЛС используется для настроек, логов и уведомлений SAVE MODE.
 
 | Команда | Описание |
 | --- | --- |
@@ -114,7 +115,7 @@ Dot-команды нужны для возможностей, которые н
 
 Важно:
 
-- `.mute` hard mode работает только там, где Telethon/Telegram даёт право удалить сообщение.
+- `.mute` hard mode в business режиме пытается удалить сообщение через `deleteBusinessMessages`; итог зависит от прав Telegram Business.
 - Удаление “для всех” может не сработать из-за ограничений Telegram.
 - `.info` не показывает дату регистрации: официально она недоступна через Telegram API.
 - `.spam` не делает массовую рассылку, не ходит по спискам чатов и ограничен текущим диалогом.
