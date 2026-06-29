@@ -44,6 +44,26 @@ sanitize_instance_name() {
   printf '%s\n' "${name}"
 }
 
+sanitize_llm_provider() {
+  local provider="$1"
+
+  provider="$(printf '%s' "${provider}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z')"
+  case "${provider}" in
+    *openai*)
+      printf 'openai\n'
+      ;;
+    *gemini*)
+      printf 'gemini\n'
+      ;;
+    *anthropic*|*claude*)
+      printf 'anthropic\n'
+      ;;
+    *)
+      printf 'anthropic\n'
+      ;;
+  esac
+}
+
 instance_dir() {
   local name="$1"
 
@@ -314,7 +334,7 @@ write_instance_env() {
   media_dir="$(prompt_value MEDIA_DIR "MEDIA_DIR inside container" "${data_dir}/media")"
   save_media="$(prompt_bool SAVE_MEDIA_ENABLED "Enable SAVE_MEDIA" "true")"
   max_media_size_mb="$(prompt_value MAX_MEDIA_SIZE_MB "MAX_MEDIA_SIZE_MB" "50")"
-  llm_provider="$(prompt_value LLM_PROVIDER "LLM_PROVIDER (anthropic/openai/gemini)" "anthropic")"
+  llm_provider="$(sanitize_llm_provider "$(prompt_value LLM_PROVIDER "LLM_PROVIDER (anthropic/openai/gemini)" "anthropic")")"
   anthropic_api_key="$(prompt_value ANTHROPIC_API_KEY "ANTHROPIC_API_KEY (optional)")"
   openai_api_key="$(prompt_value OPENAI_API_KEY "OPENAI_API_KEY (optional)")"
   gemini_api_key="$(prompt_value GEMINI_API_KEY "GEMINI_API_KEY (optional)")"
