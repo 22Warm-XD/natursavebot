@@ -177,6 +177,9 @@ Installer:
 - кладёт исходники в `/opt/natursavebot/app`;
 - кладёт управляющие скрипты в `/opt/natursavebot/bin`;
 - создаёт удобные команды в `/usr/local/bin`;
+- спрашивает `INSTANCE_NAME`, `BOT_TOKEN`, `BOT_USERNAME`, `OWNER_TELEGRAM_ID`, `SUPERADMIN_ID`, `TIMEZONE`, media-настройки и LLM keys;
+- генерирует `ENCRYPTION_KEY` автоматически;
+- создаёт `.env`, `compose.yml`, `data/` и запускает `docker compose up -d --build`;
 - не копирует реальный `.env` и не перетирает секреты без подтверждения.
 
 Создать отдельного бота-инстанс:
@@ -196,7 +199,7 @@ sudo natursavebot-create-instance mnemora-timur
   app/
 ```
 
-После создания открой `.env` инстанса и заполни `BOT_TOKEN`, `BOT_USERNAME`, `OWNER_TELEGRAM_ID`, `SUPERADMIN_ID`, `TIMEZONE`, `SAVE_MEDIA`, `MAX_MEDIA_SIZE_MB` и LLM keys при необходимости.
+Если инстанс уже существует, installer не перетрёт `.env` без подтверждения. Для второго и следующих ботов используй ту же команду `natursavebot-create-instance`: она интерактивно спросит настройки и создаст отдельный контейнер.
 
 Полезные команды:
 

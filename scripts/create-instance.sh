@@ -8,16 +8,17 @@ source "${SCRIPT_DIR}/lib.sh"
 
 usage() {
   cat <<'USAGE'
-Usage: sudo create-instance.sh INSTANCE_NAME [--source PATH] [--no-start] [--force-env]
+Usage: sudo create-instance.sh [INSTANCE_NAME] [--source PATH] [--no-start] [--force-env]
 
 Creates /opt/natursavebot/INSTANCE_NAME with an independent:
   - app source snapshot
-  - .env file
+  - interactive .env file
   - data/media directory
   - compose.yml project
   - Docker container
 
-INSTANCE_NAME must use lowercase letters, digits, '-' or '_'.
+INSTANCE_NAME must use lowercase letters, digits, '-' or '_'. If omitted, the
+script asks for it interactively.
 USAGE
 }
 
@@ -59,7 +60,9 @@ main() {
     esac
   done
 
-  [[ -n "${instance_name}" ]] || die "INSTANCE_NAME is required"
+  if [[ -z "${instance_name}" ]]; then
+    instance_name="$(prompt_required INSTANCE_NAME "INSTANCE_NAME, for example mnemora-timur")"
+  fi
   validate_instance_name "${instance_name}"
   ensure_docker_compose
 
@@ -76,7 +79,7 @@ main() {
   install -m 0755 -d "${directory}" "${directory}/data" "${directory}/data/media"
   sync_app_source "${source_dir}" "${directory}/app"
   write_compose_file "${instance_name}"
-  write_env_from_template "${source_dir}/.env.example" "${directory}/.env" "${force_env}"
+  write_instance_env "${directory}/.env" "${force_env}"
 
   if [[ "${start_container}" -eq 1 ]]; then
     compose_for_instance "${instance_name}" up -d --build
@@ -85,6 +88,15 @@ main() {
   fi
 
   log "Instance '${instance_name}' is ready at ${directory}"
+  cat <<EOF
+
+Useful commands:
+  Logs:      docker compose --project-directory ${directory} -f ${directory}/compose.yml logs -f
+  Restart:   docker compose --project-directory ${directory} -f ${directory}/compose.yml restart
+  Stop:      docker compose --project-directory ${directory} -f ${directory}/compose.yml stop
+  Update:    update-instance.sh ${instance_name}
+  Uninstall: remove-instance.sh ${instance_name}
+EOF
 }
 
 main "$@"

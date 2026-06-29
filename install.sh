@@ -35,7 +35,7 @@ source "${SCRIPT_DIR}/scripts/lib.sh"
 
 usage() {
   cat <<'USAGE'
-Usage: sudo ./install.sh [--root /opt/natursavebot] [--skip-docker-install]
+Usage: sudo ./install.sh [--root /opt/natursavebot] [--skip-docker-install] [--no-create-instance]
 
 Installs Natursavebot production helpers on Ubuntu/Debian:
   - Docker Engine with the Docker Compose plugin when needed
@@ -44,12 +44,17 @@ Installs Natursavebot production helpers on Ubuntu/Debian:
   - convenience commands under /usr/local/bin
 
 This installer never copies .env secrets into /opt/natursavebot/app.
+By default it asks for instance settings and starts the first bot instance.
 USAGE
 }
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
-    die "Run this installer as root, for example: sudo ./install.sh"
+    if command -v sudo >/dev/null 2>&1; then
+      log "Root privileges are required; re-running through sudo"
+      exec sudo -E bash "${SCRIPT_DIR}/install.sh" "$@"
+    fi
+    die "Run this installer as root, for example: curl -fsSL https://raw.githubusercontent.com/22Warm-XD/natursavebot/main/install.sh | sudo bash"
   fi
 }
 
@@ -138,6 +143,8 @@ install_helper_scripts() {
 
 main() {
   local skip_docker_install=0
+  local create_instance=1
+  local original_args=("$@")
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -150,6 +157,10 @@ main() {
         skip_docker_install=1
         shift
         ;;
+      --no-create-instance)
+        create_instance=0
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -160,7 +171,7 @@ main() {
     esac
   done
 
-  require_root
+  require_root "${original_args[@]}"
 
   if [[ "${skip_docker_install}" -eq 0 ]]; then
     install_docker_stack
@@ -172,11 +183,15 @@ main() {
   install_app_snapshot
   install_helper_scripts
 
+  if [[ "${create_instance}" -eq 1 ]]; then
+    "${INSTALL_ROOT}/bin/create-instance.sh" --source "${INSTALL_ROOT}/app"
+  fi
+
   cat <<EOF
 
 Natursavebot production helpers installed.
 
-Create an instance:
+Create another instance:
   sudo natursavebot-create-instance main
 
 List instances:
