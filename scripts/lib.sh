@@ -59,8 +59,20 @@ confirm() {
   local prompt="$1"
   local response
 
-  read -r -p "${prompt} [y/N] " response
+  read -r -p "${prompt} [y/N] " response </dev/tty
   [[ "${response}" =~ ^([yY]|[yY][eE][sS])$ ]]
+}
+
+read_from_tty() {
+  local prompt="$1"
+  local value
+
+  if [[ ! -r /dev/tty ]]; then
+    die "Interactive input requires a TTY. Run from an SSH terminal or provide values through environment variables."
+  fi
+
+  read -r -p "${prompt}" value </dev/tty
+  printf '%s\n' "${value}"
 }
 
 prompt_value() {
@@ -75,10 +87,10 @@ prompt_value() {
   fi
 
   if [[ -n "${default_value}" ]]; then
-    read -r -p "${prompt} [${default_value}]: " value
+    value="$(read_from_tty "${prompt} [${default_value}]: ")"
     printf '%s\n' "${value:-${default_value}}"
   else
-    read -r -p "${prompt}: " value
+    value="$(read_from_tty "${prompt}: ")"
     printf '%s\n' "${value}"
   fi
 }
@@ -94,7 +106,7 @@ prompt_required() {
       printf '%s\n' "${value}"
       return
     fi
-    log "Value is required"
+    printf '[natursavebot] Value is required\n' >&2
   done
 }
 
@@ -111,7 +123,7 @@ prompt_bool() {
     if [[ "${default_value}" != "true" ]]; then
       suffix="[y/N]"
     fi
-    read -r -p "${prompt} ${suffix} " value
+    value="$(read_from_tty "${prompt} ${suffix} ")"
     value="${value:-${default_value}}"
   fi
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${SCRIPT_PATH}")" && pwd)"
 REPO_TARBALL_URL="${NATURSAVEBOT_TARBALL_URL:-https://github.com/22Warm-XD/natursavebot/archive/refs/heads/main.tar.gz}"
 OS_ID=""
 OS_VERSION_CODENAME=""
