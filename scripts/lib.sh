@@ -37,6 +37,13 @@ validate_instance_name() {
   esac
 }
 
+sanitize_instance_name() {
+  local name="$1"
+
+  name="$(printf '%s' "${name}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+  printf '%s\n' "${name}"
+}
+
 instance_dir() {
   local name="$1"
 

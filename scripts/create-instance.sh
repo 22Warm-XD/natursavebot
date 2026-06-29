@@ -28,6 +28,7 @@ main() {
   local source_dir
   local directory
   local force_env=0
+  local original_instance_name
   local start_container=1
 
   while [[ $# -gt 0 ]]; do
@@ -62,6 +63,11 @@ main() {
 
   if [[ -z "${instance_name}" ]]; then
     instance_name="$(prompt_required INSTANCE_NAME "INSTANCE_NAME, for example mnemora-timur")"
+  fi
+  original_instance_name="${instance_name}"
+  instance_name="$(sanitize_instance_name "${instance_name}")"
+  if [[ "${instance_name}" != "${original_instance_name}" ]]; then
+    log "Using sanitized instance name: ${instance_name}"
   fi
   validate_instance_name "${instance_name}"
   ensure_docker_compose
