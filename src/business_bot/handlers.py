@@ -211,13 +211,19 @@ async def _handle_hard_mute_if_needed(session, message: Message, row, media, bot
         raw_json=message.model_dump_json(exclude_none=True),
     )
 
-    await _notify_hard_mute_hidden(bot, settings, row)
+    await _safe_notify_hard_mute_hidden(bot, settings, row)
 
     delete_for_everyone_success = False
     delete_local_success = False
     delete_error = None
+    delete_for_everyone_enabled = bool(
+        settings.hard_mute_delete_for_everyone
+        and (chat_setting.hard_mute_delete_for_everyone if chat_setting else True)
+    )
     try:
-        if message.business_connection_id:
+        if not delete_for_everyone_enabled:
+            delete_error = "delete_for_everyone disabled"
+        elif message.business_connection_id:
             await delete_business_messages(
                 bot,
                 business_connection_id=message.business_connection_id,
@@ -230,10 +236,7 @@ async def _handle_hard_mute_if_needed(session, message: Message, row, media, bot
     except Exception as exc:
         delete_error = str(exc).replace("\n", " ")[:240]
         logger.warning("hard mute delete failed chat=%s msg=%s err=%s", message.chat.id, message.message_id, delete_error)
-        await bot.send_message(
-            settings.owner_telegram_id,
-            f"Удаление для всех не удалось: {delete_error}",
-        )
+        await _safe_owner_message(bot, settings.owner_telegram_id, f"Удаление для всех не удалось: {delete_error}")
 
     await update_hard_mute_delete_status(
         session,
@@ -243,6 +246,27 @@ async def _handle_hard_mute_if_needed(session, message: Message, row, media, bot
         delete_error=delete_error,
     )
     return True
+
+
+async def _safe_notify_hard_mute_hidden(bot: Bot, settings: Settings, row) -> None:
+    try:
+        await _notify_hard_mute_hidden(bot, settings, row)
+    except Exception as exc:
+        logger.warning(
+            "hard mute owner notification failed chat=%s msg=%s err=%s",
+            getattr(row, "chat_id", None),
+            getattr(row, "message_id", None),
+            str(exc).replace("\n", " ")[:240],
+        )
+
+
+async def _safe_owner_message(bot: Bot, owner_id: int | None, text: str) -> None:
+    if not owner_id:
+        return
+    try:
+        await bot.send_message(owner_id, text)
+    except Exception as exc:
+        logger.warning("owner notification failed err=%s", str(exc).replace("\n", " ")[:240])
 
 
 async def _notify_hard_mute_hidden(bot: Bot, settings: Settings, row) -> None:

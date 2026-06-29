@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 
 from aiogram.types import Update
 from sqlalchemy import select
 
-from src.business_bot.media_downloader import extract_business_media
-from src.db.models import BusinessConnection, DeletedEvent, EditHistory, Message, MessageEdit, SaveModeEvent
-from src.business_bot.message_saver import save_business_delete
-from src.db.repositories.messages import upsert_message
+from src.business_bot.media_downloader import BusinessMedia, extract_business_media, has_expiring_media_hint
+from src.db.models import BusinessConnection, DeletedEvent, EditHistory, MediaFile, Message, MessageEdit, SaveModeEvent
+from src.business_bot.message_saver import save_business_delete, save_business_message
+from src.db.repositories.messages import get_message, upsert_message
 from src.db.session import get_session, init_db
 from src.services.save_mode_business import record_business_update
 
@@ -181,13 +181,111 @@ async def test_typed_delete_ignores_owner_messages(tmp_path) -> None:
         await session.commit()
 
     assert messages == []
-    assert event is None
+    assert event is not None
+    assert event.found_count == 1
     async with get_session() as session:
         row = (await session.execute(select(Message))).scalar_one()
         events = list((await session.execute(select(SaveModeEvent))).scalars())
 
-    assert row.deleted is False
-    assert events == []
+    assert row.deleted is True
+    assert row.deleted_at is not None
+    assert len(events) == 1
+    assert events[0].kind == "delete"
+    assert events[0].message_id == 20
+
+
+async def test_business_messages_are_scoped_by_connection_id(tmp_path) -> None:
+    await init_db(f"sqlite+aiosqlite:///{tmp_path / 'connections.db'}")
+
+    async with get_session() as session:
+        for connection_id, text in (("bc-1", "first"), ("bc-2", "second")):
+            await upsert_message(
+                session,
+                source="business",
+                is_business=True,
+                business_connection_id=connection_id,
+                chat_id=500,
+                message_id=20,
+                sender_id=42,
+                sender_name="Client",
+                sender_username="client",
+                chat_title="Client",
+                direction="incoming",
+                text_value=text,
+                date=datetime(2026, 5, 12, 14, 0),
+            )
+        await session.commit()
+
+    async with get_session() as session:
+        rows = list((await session.execute(select(Message).order_by(Message.business_connection_id))).scalars())
+        first = await get_message(session, 500, 20, source="business", business_connection_id="bc-1")
+        second = await get_message(session, 500, 20, source="business", business_connection_id="bc-2")
+
+    assert [row.business_connection_id for row in rows] == ["bc-1", "bc-2"]
+    assert first is not None and first.text == "first"
+    assert second is not None and second.text == "second"
+
+
+async def test_business_media_upsert_does_not_duplicate_rows(tmp_path) -> None:
+    await init_db(f"sqlite+aiosqlite:///{tmp_path / 'media-dedupe.db'}")
+    message = Update.model_validate({"update_id": 7, "business_message": _message("photo", message_id=31)}).business_message
+    assert message is not None
+    media = BusinessMedia(
+        media_type="photo",
+        file_id="file-1",
+        file_unique_id="unique-1",
+        file_size=100,
+        width=10,
+        height=10,
+        status="metadata_only",
+        metadata={"file_id": "file-1"},
+    )
+
+    async with get_session() as session:
+        await save_business_message(session, message, media, owner_id=100)
+        await save_business_message(session, message, media, owner_id=100)
+        await session.commit()
+
+    async with get_session() as session:
+        rows = list((await session.execute(select(MediaFile))).scalars())
+
+    assert len(rows) == 1
+    assert rows[0].file_unique_id == "unique-1"
+
+
+async def test_typed_business_message_dates_are_saved_as_naive_utc(tmp_path) -> None:
+    await init_db(f"sqlite+aiosqlite:///{tmp_path / 'typed-date.db'}")
+    message = Update.model_validate(
+        {
+            "update_id": 8,
+            "business_message": {
+                **_message("date", message_id=32),
+                "date": datetime(2026, 5, 12, 19, 0, tzinfo=timezone(timedelta(hours=5))),
+            },
+        }
+    ).business_message
+    assert message is not None
+
+    async with get_session() as session:
+        await save_business_message(session, message, owner_id=100)
+        await session.commit()
+
+    async with get_session() as session:
+        row = (await session.execute(select(Message))).scalar_one()
+
+    assert row.date == datetime(2026, 5, 12, 14, 0)
+    assert row.date.tzinfo is None
+
+
+def test_expiring_media_hint_detects_raw_payload_markers() -> None:
+    message = SimpleNamespace(
+        text=None,
+        caption=None,
+        has_media_spoiler=False,
+        model_dump=lambda mode="json", by_alias=True, exclude_none=True: {"media": {"viewOnce": True}},
+    )
+
+    assert has_expiring_media_hint(message) is True
 
 
 def test_business_voice_audio_are_ignored_unless_reply_save_allows_them() -> None:

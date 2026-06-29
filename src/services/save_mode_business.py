@@ -110,7 +110,13 @@ async def record_edited_business_message(
 ) -> BusinessSaveModeNotification | None:
     snapshot = message if isinstance(message, BusinessMessageSnapshot) else parse_business_message(message)
     edited_at = snapshot.edited_at or snapshot.date
-    existing = await get_message(session, snapshot.chat_id, snapshot.message_id)
+    existing = await get_message(
+        session,
+        snapshot.chat_id,
+        snapshot.message_id,
+        source="business",
+        business_connection_id=snapshot.connection_id,
+    )
     if existing is None:
         row = await upsert_message(
             session,
@@ -234,7 +240,17 @@ async def record_deleted_business_messages(
     notes: list[BusinessSaveModeNotification] = []
     found_count = 0
     for message_id in snapshot.message_ids:
-        message = await get_message(session, snapshot.chat_id, message_id) if snapshot.chat_id is not None else None
+        message = (
+            await get_message(
+                session,
+                snapshot.chat_id,
+                message_id,
+                source="business",
+                business_connection_id=snapshot.connection_id,
+            )
+            if snapshot.chat_id is not None
+            else None
+        )
         if message is not None:
             await mark_deleted(session, message, deleted_at)
             found_count += 1

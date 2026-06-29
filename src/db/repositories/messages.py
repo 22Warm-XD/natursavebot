@@ -40,7 +40,14 @@ async def upsert_message(
 ) -> Message:
     await _ensure_message_business_columns(session)
     row = (
-        await session.execute(select(Message).where(Message.chat_id == chat_id, Message.message_id == message_id))
+        await session.execute(
+            select(Message).where(
+                Message.source == source,
+                _business_connection_clause(business_connection_id),
+                Message.chat_id == chat_id,
+                Message.message_id == message_id,
+            )
+        )
     ).scalar_one_or_none()
     payload = json.dumps(media_meta, ensure_ascii=False) if media_meta else None
     if row is None:
@@ -90,18 +97,39 @@ async def upsert_message(
     return row
 
 
-async def get_message(session: AsyncSession, chat_id: int, message_id: int) -> Message | None:
+async def get_message(
+    session: AsyncSession,
+    chat_id: int,
+    message_id: int,
+    *,
+    source: str | None = None,
+    business_connection_id: str | None = None,
+) -> Message | None:
     await _ensure_message_business_columns(session)
-    return (
-        await session.execute(select(Message).where(Message.chat_id == chat_id, Message.message_id == message_id))
-    ).scalar_one_or_none()
+    stmt = select(Message).where(Message.chat_id == chat_id, Message.message_id == message_id)
+    if source is not None:
+        stmt = stmt.where(Message.source == source)
+    if business_connection_id is not None:
+        stmt = stmt.where(Message.business_connection_id == business_connection_id)
+    return (await session.execute(stmt.order_by(desc(Message.date)))).scalars().first()
 
 
-async def find_messages_by_ids(session: AsyncSession, message_ids: list[int], chat_id: int | None = None) -> list[Message]:
+async def find_messages_by_ids(
+    session: AsyncSession,
+    message_ids: list[int],
+    chat_id: int | None = None,
+    *,
+    source: str | None = None,
+    business_connection_id: str | None = None,
+) -> list[Message]:
     await _ensure_message_business_columns(session)
     stmt = select(Message).where(Message.message_id.in_(message_ids))
     if chat_id is not None:
         stmt = stmt.where(Message.chat_id == chat_id)
+    if source is not None:
+        stmt = stmt.where(Message.source == source)
+    if business_connection_id is not None:
+        stmt = stmt.where(Message.business_connection_id == business_connection_id)
     return list((await session.execute(stmt.order_by(desc(Message.date)))).scalars())
 
 
@@ -217,3 +245,9 @@ async def _ensure_message_business_columns(session: AsyncSession) -> None:
     if "is_business" not in columns:
         await session.execute(text("ALTER TABLE messages ADD COLUMN is_business BOOLEAN NOT NULL DEFAULT 0"))
     _message_schema_checked.add(schema_key)
+
+
+def _business_connection_clause(business_connection_id: str | None):
+    if business_connection_id is None:
+        return Message.business_connection_id.is_(None)
+    return Message.business_connection_id == business_connection_id

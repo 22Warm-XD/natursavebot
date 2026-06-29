@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     love_animation_max_messages: int = 5
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", str(Path(__file__).parent.parent / ".env")),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

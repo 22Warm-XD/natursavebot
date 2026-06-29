@@ -92,7 +92,15 @@ class BusinessConnection(Base):
 
 class Message(Base):
     __tablename__ = "messages"
-    __table_args__ = (UniqueConstraint("chat_id", "message_id", name="uq_message_chat_msg"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "source",
+            "business_connection_id",
+            "chat_id",
+            "message_id",
+            name="uq_message_source_conn_chat_msg",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source: Mapped[str] = mapped_column(String(32), default="telethon", index=True)

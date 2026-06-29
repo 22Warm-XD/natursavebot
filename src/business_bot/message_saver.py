@@ -4,10 +4,11 @@ import json
 from datetime import UTC, datetime
 
 from aiogram.types import BusinessMessagesDeleted, Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.business_bot.media_downloader import BusinessMedia, media_file_row
-from src.db.models import DeletedEvent, MessageEdit, SaveModeEvent
+from src.db.models import DeletedEvent, MediaFile, MessageEdit, SaveModeEvent
 from src.db.repositories.chats import upsert_chat
 from src.db.repositories.messages import find_messages_by_ids, get_message, mark_deleted, upsert_message
 
@@ -49,7 +50,7 @@ async def save_business_message(
         direction="outgoing" if sender and owner_id and sender.id == owner_id else "incoming",
         text_value=message.text,
         caption=message.caption,
-        date=message.date.replace(tzinfo=None) if message.date else datetime.now(UTC).replace(tzinfo=None),
+        date=_naive_utc(message.date) if message.date else datetime.now(UTC).replace(tzinfo=None),
         edited_at=_edit_date(message),
         reply_to=message.reply_to_message.message_id if message.reply_to_message else None,
         media_type=media.media_type if media else None,
@@ -67,7 +68,7 @@ async def save_business_message(
             message_id=message.message_id,
         )
         if media_row:
-            session.add(media_row)
+            await _upsert_media_file(session, media_row)
     await session.flush()
     return row
 
@@ -79,7 +80,13 @@ async def save_business_edit(
     *,
     owner_id: int | None = None,
 ) -> tuple[object, MessageEdit | None, str | None]:
-    old = await get_message(session, message.chat.id, message.message_id)
+    old = await get_message(
+        session,
+        message.chat.id,
+        message.message_id,
+        source="business",
+        business_connection_id=message.business_connection_id,
+    )
     old_text = _message_body(old) if old else None
     row = await save_business_message(session, message, media, owner_id=owner_id)
     new_text = message.text or message.caption
@@ -121,12 +128,16 @@ async def save_business_delete(
     *,
     owner_id: int | None = None,
 ) -> tuple[list[object], DeletedEvent | None]:
-    found_messages = await find_messages_by_ids(session, list(deleted.message_ids), chat_id=deleted.chat.id)
+    found_messages = await find_messages_by_ids(
+        session,
+        list(deleted.message_ids),
+        chat_id=deleted.chat.id,
+        source="business",
+        business_connection_id=deleted.business_connection_id,
+    )
     messages = [message for message in found_messages if not _is_owner_message(message, owner_id)]
-    if found_messages and not messages:
-        return [], None
     now = datetime.now(UTC).replace(tzinfo=None)
-    for message in messages:
+    for message in found_messages:
         await mark_deleted(session, message, now)
         session.add(
             SaveModeEvent(
@@ -149,7 +160,7 @@ async def save_business_delete(
         business_connection_id=deleted.business_connection_id,
         chat_id=deleted.chat.id,
         message_ids_json=json.dumps(list(deleted.message_ids)),
-        found_count=len(messages),
+        found_count=len(found_messages),
         raw_json=deleted.model_dump_json(exclude_none=True),
         created_at=now,
     )
@@ -180,5 +191,47 @@ def _edit_date(message: Message) -> datetime | None:
     if not message.edit_date:
         return None
     if isinstance(message.edit_date, datetime):
-        return message.edit_date.replace(tzinfo=None)
+        return _naive_utc(message.edit_date)
     return datetime.fromtimestamp(int(message.edit_date), UTC).replace(tzinfo=None)
+
+
+def _naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+async def _upsert_media_file(session: AsyncSession, media_row: MediaFile) -> MediaFile:
+    stmt = select(MediaFile).where(
+        MediaFile.source == media_row.source,
+        MediaFile.chat_id == media_row.chat_id,
+        MediaFile.message_id == media_row.message_id,
+        MediaFile.media_type == media_row.media_type,
+    )
+    if media_row.business_connection_id is None:
+        stmt = stmt.where(MediaFile.business_connection_id.is_(None))
+    else:
+        stmt = stmt.where(MediaFile.business_connection_id == media_row.business_connection_id)
+    if media_row.file_unique_id:
+        stmt = stmt.where(MediaFile.file_unique_id == media_row.file_unique_id)
+    elif media_row.file_id:
+        stmt = stmt.where(MediaFile.file_id == media_row.file_id)
+
+    existing = (await session.execute(stmt.order_by(MediaFile.id))).scalars().first()
+    if existing is None:
+        session.add(media_row)
+        return media_row
+
+    existing.message_db_id = media_row.message_db_id
+    existing.file_id = media_row.file_id
+    existing.file_unique_id = media_row.file_unique_id
+    existing.file_size = media_row.file_size
+    existing.mime_type = media_row.mime_type
+    existing.duration = media_row.duration
+    existing.width = media_row.width
+    existing.height = media_row.height
+    existing.local_path = media_row.local_path
+    existing.status = media_row.status
+    existing.error = media_row.error
+    existing.metadata_json = media_row.metadata_json
+    return existing

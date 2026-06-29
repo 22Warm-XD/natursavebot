@@ -9,8 +9,10 @@ from aiogram.types import Message
 from src.business_bot.dot_commands import handle_business_dot_command
 from src.business_bot.handlers import on_business_message
 from src.config import Settings
-from src.db.models import BusinessConnection
-from src.db.repositories.chat_settings import get_chat_setting
+from sqlalchemy import select
+
+from src.db.models import BusinessConnection, HardMuteEvent, Message as StoredMessage
+from src.db.repositories.chat_settings import get_chat_setting, set_hard_mute
 from src.db.session import get_session, init_db
 
 
@@ -33,13 +35,21 @@ class _Bot:
         return True
 
 
-def _business_message(text: str, *, connection_id: str | None = "bc-1", reply: dict | None = None) -> Message:
+def _business_message(
+    text: str,
+    *,
+    connection_id: str | None = "bc-1",
+    reply: dict | None = None,
+    from_id: int = 100,
+    first_name: str = "Owner",
+    username: str = "owner",
+) -> Message:
     payload = {
         "message_id": 20,
         "date": 1778594400,
         "business_connection_id": connection_id,
         "chat": {"id": 500, "type": "private", "first_name": "Client"},
-        "from": {"id": 100, "is_bot": False, "first_name": "Owner", "username": "owner"},
+        "from": {"id": from_id, "is_bot": False, "first_name": first_name, "username": username},
         "text": text,
     }
     if reply is not None:
@@ -200,3 +210,56 @@ async def test_business_message_love_processed_by_business_router(tmp_path) -> N
 
     assert any(call["chat_id"] == 500 for call in bot.sent_messages)
     assert not any(call["chat_id"] == 100 for call in bot.sent_messages)
+
+
+async def test_business_hard_mute_respects_delete_for_everyone_setting(tmp_path) -> None:
+    await init_db(f"sqlite+aiosqlite:///{tmp_path / 'hard-mute-no-delete.db'}")
+    settings = Settings(_env_file=None, owner_telegram_id=100, telegram_mode="business")
+    bot = _Bot()
+    message = _business_message("blocked", connection_id="bc-1", from_id=42, first_name="Client", username="client")
+
+    async with get_session() as session:
+        session.add(BusinessConnection(connection_id="bc-1", user_id=100, is_enabled=True, can_reply=True))
+        await set_hard_mute(
+            session,
+            chat_id=500,
+            enabled=True,
+            chat_title="Client",
+            username="client",
+            delete_for_everyone=False,
+        )
+        await session.commit()
+
+    await on_business_message(message, bot, settings)
+
+    assert bot.deleted == []
+    async with get_session() as session:
+        stored = (await session.execute(select(StoredMessage))).scalar_one()
+        event = (await session.execute(select(HardMuteEvent))).scalar_one()
+
+    assert stored.text == "blocked"
+    assert event.delete_for_everyone_success is False
+    assert event.delete_error == "delete_for_everyone disabled"
+
+
+async def test_business_hard_mute_notification_failure_does_not_rollback(tmp_path) -> None:
+    await init_db(f"sqlite+aiosqlite:///{tmp_path / 'hard-mute-notify-fail.db'}")
+    settings = Settings(_env_file=None, owner_telegram_id=100, telegram_mode="business")
+    bot = _Bot()
+    message = _business_message("still saved", connection_id="bc-1", from_id=42, first_name="Client", username="client")
+
+    async with get_session() as session:
+        session.add(BusinessConnection(connection_id="bc-1", user_id=100, is_enabled=True, can_reply=True))
+        await set_hard_mute(session, chat_id=500, enabled=True, chat_title="Client", username="client")
+        await session.commit()
+
+    await on_business_message(message, bot, settings)
+
+    async with get_session() as session:
+        stored = (await session.execute(select(StoredMessage))).scalar_one()
+        event = (await session.execute(select(HardMuteEvent))).scalar_one()
+
+    assert stored.text == "still saved"
+    assert event.text == "still saved"
+    assert event.delete_for_everyone_success is True
+    assert bot.deleted == [{"business_connection_id": "bc-1", "message_ids": [20]}]
