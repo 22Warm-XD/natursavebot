@@ -81,6 +81,7 @@ def has_expiring_media_hint(message: Message) -> bool:
         "исчезающ",
         "истекающ",
         "посмотрите его на своём мобильном устройстве",
+        "посмотрите его на своем мобильном устройстве",
         "self-destruct",
         "self destruct",
         "view once",
@@ -185,10 +186,11 @@ def _extension(file_path: str | None, media_type: str, mime_type: str | None) ->
 
 
 def _contains_expiring_key(value: Any) -> bool:
-    keys = ("ttl", "self_destruct", "selfDestruct", "view_once", "viewOnce", "expire", "expired")
+    keys = ("ttl", "self_destruct", "selfdestruct", "view_once", "viewonce", "expire", "expired")
     if isinstance(value, dict):
         for key, item in value.items():
-            if any(marker in str(key) for marker in keys):
+            normalized_key = str(key).lower()
+            if any(marker in normalized_key for marker in keys):
                 return True
             if _contains_expiring_key(item):
                 return True

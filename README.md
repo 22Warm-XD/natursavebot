@@ -162,6 +162,81 @@ ANTHROPIC_MODEL=claude-3-5-sonnet-latest
 
 Полный список параметров лежит в `.env.example`.
 
+## 🚀 Установка На Сервер Через Curl
+
+Для Ubuntu/Debian можно поставить production-helper одной командой:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/22Warm-XD/natursavebot/main/install.sh | sudo bash
+```
+
+Installer:
+
+- проверяет Ubuntu/Debian и Docker Compose plugin;
+- при необходимости ставит Docker Engine и `docker-compose-plugin`;
+- кладёт исходники в `/opt/natursavebot/app`;
+- кладёт управляющие скрипты в `/opt/natursavebot/bin`;
+- создаёт удобные команды в `/usr/local/bin`;
+- не копирует реальный `.env` и не перетирает секреты без подтверждения.
+
+Создать отдельного бота-инстанс:
+
+```bash
+sudo natursavebot-create-instance mnemora-timur
+```
+
+Каждый инстанс живёт отдельно:
+
+```text
+/opt/natursavebot/<INSTANCE_NAME>/
+  .env
+  compose.yml
+  data/app.db
+  data/media/
+  app/
+```
+
+После создания открой `.env` инстанса и заполни `BOT_TOKEN`, `BOT_USERNAME`, `OWNER_TELEGRAM_ID`, `SUPERADMIN_ID`, `TIMEZONE`, `SAVE_MEDIA`, `MAX_MEDIA_SIZE_MB` и LLM keys при необходимости.
+
+Полезные команды:
+
+```bash
+sudo natursavebot-list-instances
+sudo natursavebot-update-instance mnemora-timur
+sudo natursavebot-remove-instance mnemora-timur
+sudo docker compose --project-directory /opt/natursavebot/mnemora-timur -f /opt/natursavebot/mnemora-timur/compose.yml logs -f
+sudo docker compose --project-directory /opt/natursavebot/mnemora-timur -f /opt/natursavebot/mnemora-timur/compose.yml restart
+sudo docker compose --project-directory /opt/natursavebot/mnemora-timur -f /opt/natursavebot/mnemora-timur/compose.yml stop
+```
+
+Backup данных инстанса:
+
+```bash
+sudo tar -czf natursavebot-mnemora-timur-backup.tgz -C /opt/natursavebot/mnemora-timur data
+```
+
+### Несколько Ботов На Одном Сервере
+
+Создай несколько инстансов с разными именами:
+
+```bash
+sudo natursavebot-create-instance mnemora-timur
+sudo natursavebot-create-instance mnemora-wife
+sudo natursavebot-create-instance mnemora-kids
+```
+
+У каждого инстанса свой:
+
+- `BOT_TOKEN`;
+- `OWNER_TELEGRAM_ID`;
+- `.env`;
+- SQLite DB;
+- `data/media`;
+- `container_name`;
+- Docker Compose project.
+
+Данные между инстансами не смешиваются.
+
 ## 🐳 Запуск Через Docker
 
 ```bash
@@ -273,6 +348,8 @@ tests/
 legacy/
 assets/
 data/
+install.sh
+scripts/
 ```
 
 ## 🖼 Скриншоты

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from aiogram.types import BusinessConnection as TgBusinessConnection
 from sqlalchemy import desc, select
@@ -19,7 +20,7 @@ async def save_business_connection(session: AsyncSession, connection: TgBusiness
     rights_json = connection.rights.model_dump_json(exclude_none=True) if connection.rights else None
     raw_json = connection.model_dump_json(exclude_none=True)
     name = " ".join(part for part in [user.first_name, user.last_name] if part).strip() or user.username
-    date_value = connection.date.replace(tzinfo=None) if connection.date else None
+    date_value = _naive_utc(connection.date) if connection.date else None
     if row is None:
         row = BusinessConnection(
             connection_id=connection.id,
@@ -73,3 +74,9 @@ def rights_summary(connection: BusinessConnection | None) -> str:
         f"Can reply: {connection.can_reply}\n"
         f"Rights: {rights_line}"
     )
+
+
+def _naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
